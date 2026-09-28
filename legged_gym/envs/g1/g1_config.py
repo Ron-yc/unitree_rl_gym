@@ -108,3 +108,77 @@ class G1RoughCfgPPO( LeggedRobotCfgPPO ):
         experiment_name = 'g1'
 
   
+class G1_OneMeter_Cfg(G1RoughCfg):
+    class env(G1RoughCfg.env):
+        episode_length_s = 6
+
+    class terrain(G1RoughCfg.terrain):
+        mesh_type = "plane"
+        curriculum = False
+
+    class commands(G1RoughCfg.commands):
+        curriculum = False
+        heading_command = False
+        resampling_time = 2000
+
+        target_distance = 1
+        max_speed = 0.5
+        ramp_up_time = 0.5
+        slow_down_distance = 0.35
+
+        class range(G1RoughCfg.commands.ranges):
+            lin_vel_x = [0.0, 0.0]
+            lin_vel_y = [0.0, 0.0]
+            ang_vel_yaw = [0.0, 0.0]
+            heading = [0.0, 0.0]
+
+    class domain_rand(G1RoughCfg.domain_rand):
+        randomize_base_mass = False
+        randomize_friction = False
+        push_robots = False
+
+    class noise(G1RoughCfg.noise):
+        add_noise = False
+
+    class reward(G1RoughCfg.rewards):
+        only_positive_rewards = False
+        tracking_sigma = 0.15
+
+        class scales(G1RoughCfg.rewards.scales):
+            termination = -2.0
+
+            tracking_ang_vel = 0.5
+            tracking_lin_vel = 2.0
+            target_position = 2.0
+            stop_velocity = -2.0
+            lateral_position = -1.0
+            overshoot = -5.0
+
+            action_rate = -0.05
+            dof_acc = -5e-7
+            torques = -1e-5
+            stand_still = -1.0
+
+            orientation = -1.0
+            base_height = -10.0
+            lin_vel_z = -2.0
+            ang_vel_xy = -0.05
+            dof_pos_limits = -5.0
+
+            feet_air_time = 0.0
+            contact = 0.18
+            contact_no_vel = -0.2
+            feet_swing_height = -20.0
+
+class G1_OneMeter_CfgPPO(G1RoughCfgPPO):
+
+    class policy(G1RoughCfgPPO.policy):
+        init_noise_std = 0.6
+
+    class algorithm(G1RoughCfgPPO.algorithm):
+        entropy_coef = 0.005
+
+    class runner(G1RoughCfgPPO.runner):
+        experiment_name = "g1_one_meter"
+        run_name = "walk_1m_stop"
+        max_iterations = 10000

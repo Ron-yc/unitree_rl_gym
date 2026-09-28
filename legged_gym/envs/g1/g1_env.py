@@ -121,4 +121,166 @@ class G1Robot(LeggedRobot):
     
     def _reward_hip_pos(self):
         return torch.sum(torch.square(self.dof_pos[:,[1,2,7,8]]), dim=1)
-    
+
+
+class G1OneMeterRobot(G1Robot):
+    def _init_buffers(self):
+        super()._init_buffers()
+
+        self.start_pos = self.root_states[:, :2].clone()
+
+        self.forward_distance = torch.zeros(
+            self.num_envs,
+            dtype = torch.float,
+            device = self.device,
+        )
+
+        self.remaining_distance = torch.zeros_like(
+            self.forward_distance
+        )
+
+    def _reset_root_states(self, env_ids):
+        super()._reset_root_states(env_ids)
+
+        self.root_states[env_ids,7:13] = 0.0
+
+        env_ids_int32 = env_ids.to(
+            dtype = torch.int32
+        )
+
+        self.gym.set_actor_root_state_tensor_indexed(
+            self.sim;
+            gymtorch.unwrap_tensor(self.root_states),
+            gymtorch.unwrap_tensor(self.env_ids_int32),
+            len(env_ids_int32),
+        )
+
+    def reset_idx(self, env_ids):
+        super().reset_idx(env_ids)
+
+        if len(env_ids) == 0:
+            return 
+
+        self.strat_pos[env_ids] = self.root_states[env_ids, :2]
+        self.forward_distance[env_ids] = 0.0
+        self.remaining_distance[env_ids] = self.cfg.commands.target_distance
+        self.commands[env_ids] = 0.0
+
+    def _resample_commands(self, env_ids):
+        self.commands[env_ids] = 0.0
+
+    def _post_physics_step_callback(self):
+        super()._post_physics_step_callback()
+
+        self.forward_distance = self.root_states[:, 0] - self.start_pos[:, 0]
+
+        self.remaining_distance = self.cfg.commands.target_distance - self.forward_distance
+
+        elapsed_time = self.episode_length_buf.float() * self.dt
+
+        ramp_up = torch.clamp(
+            elapsed_time / self.cfg.commands.ramp_up_time,
+            min = 0.0,
+            max = 1.0,
+        )
+
+        ramp_down = torch.clamp(
+            self.remaining_distance / self.cfg.commands.slow_down_distance,
+            min = 0.0,
+            max = 1.0
+        )
+
+        target_speed = self.cfg.commands.max_speed * torch.minimum(ramp_down,ramp_up)
+
+        target_speed = torch.where(
+            self.remaining_distance > 0.0,
+            target_speed,
+            torch.zeros_like(target_speed),
+        )
+
+        self.commands[:, 0] = target_speed
+        self.commands[:, 1] = 0.0
+        self.commands[:, 2] = 0.0
+        self.commands[:, 3] = 0.0
+
+    def _reward_target_position(self):
+        position_error = self.remaining_distance
+
+        return torch.exp(
+            -torch.square(position_error) / 0.02
+        )
+
+    def _reward_lateral_position(self):
+        lateral_distance = self.root_states[:, 1] - self.start_pos[:, 1]
+
+        return torch.square(lateral_distance)
+
+    def _reward_stop_velocity(self):
+        near_target = torch.abs(self.remaining_distance) < 0.15
+
+        linear_velocity = torch.sum(
+            torch.square(self.root_states[:, 7:10]),
+            dim = 1,
+        )
+
+        angular_velocity = torch.sum(
+            torch.square(self.root_states[:, 10:13]), 
+            dim=1,  
+        )
+
+        return (linear_velocity + 0.25 * angular_velocity) * near_target.float()
+
+    def _reward_overshoot(self):
+        overshoot = torch.clamp(
+            self.forward_distance - self.cfg.commands.target_distance,
+            min = 0.0,
+        )
+
+        return torch.square(overshoot)
+
+    def _reward_contact(self):
+        contact = self.contact_forces[:, self.feet_indices, 2] > 1.0
+
+        moving = self.commands[:, 0] > 0.05
+
+        gait_score = torch.zeros(
+            self.num_envs,
+            dtype = torch.float,
+            device = self.device,
+        )
+
+        for foot_index in range(self.feet_num):
+            is_stance = self.leg_phase[:, foot_index] < 0.55    #小于支撑大于摆动
+
+            gait_score += ~(
+                contact[:, foot_index] ^ is_stance 
+            )
+            standing_score = torch.sum(
+                contact.float(),
+                dim = 1,
+            )
+
+            return torch.where(
+                moving,
+                gait_score,
+                standing_score,
+            )
+
+    def _reward_feet_swing_height(self):
+        contact = (
+            torch.norm(
+                self.contact_forces[:, self.feet_indices, :3],
+                dim = 2
+            ) > 1.0
+        )
+
+        position_error = (
+            torch.square(
+                self.feet_pos[:, :, 2] - 0.08
+            )
+            * ~contact
+        )
+
+        moving = self.commands[:, 0] > 0.05
+
+        return torch.sum(position_error, dim=1) * moving.float()
